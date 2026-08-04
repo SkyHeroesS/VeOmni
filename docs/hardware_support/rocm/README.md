@@ -101,10 +101,40 @@ The image bakes in the following ROCm-specific environment variables (you can ov
 | `FLA_TILELANG` | `0` | Force the fla GatedDeltaNet Triton path; the tilelang ROCm backend in this stack has a HIP codegen bug |
 | `TOKENIZERS_PARALLELISM` | `false` | Suppress tokenizer fork warnings |
 
+## Attention backends
+
+The default `flash_attention_2` runs on ROCm through flash-attn 2.8.3's composable-kernel
+build. On AMD GPUs there is a second option, **`aiter`** (AMD's AI Tensor Engine for ROCm),
+which routes attention to aiter's FMHA-v3 kernels:
+
+```yaml
+model:
+  ops_implementation:
+    attn_implementation: aiter
+```
+
+It works with sequence parallelism, packed/varlen inputs, and gradient checkpointing, and is
+numerically interchangeable with FA2. Whether it is worth enabling depends on how much of the
+step is attention:
+
+| model | attention share of the step | effect |
+|---|---|---|
+| Wan2.1 DiT (attention-bound) | 57% under FA2 | **1.27× faster** end-to-end, rising to **1.41×** at real 480P context (32,760 tokens) |
+| Qwen3-Omni-MoE (MoE-bound) | 7% (MoE group-gemm is 53%) | ≈parity at 8k (1.06×), **1.47×** by 64k context |
+
+So: enable it for DiT and for long-context training; at short context on a MoE model it
+neither helps nor hurts. Full methodology and per-length numbers are in
+[`aiter_attention_wan2_1.md`](aiter_attention_wan2_1.md) and
+[`aiter_attention_qwen3_omni_moe.md`](aiter_attention_qwen3_omni_moe.md).
+
+`aiter` ships in the pre-built image. Its first step pays a one-time CK/FMHA-v3 kernel-load
+and JIT cost; bake the JIT cache into the image to amortise it, and always exclude step 1
+when benchmarking.
+
 ## Known limitations
 
 Validated on 8×MI308X / ROCm 7.14. End-to-end training (FSDP2 sharding, Ulysses SP, expert parallel EP, VLM/Omni, DiT) works and aligns numerically. Known limitations:
 
-- **CUDA-only kernels** (FA3/FA4/Quack/FlashMLA/DSA, e.g. `gpt_oss`) fall back to triton/eager on ROCm, or are skipped.
+- **CUDA-only kernels** (FA3/FA4/Quack/FlashMLA/DSA, e.g. `gpt_oss`) fall back to triton/eager on ROCm, or are skipped. For attention specifically, `attn_implementation: aiter` is the ROCm-native alternative (see above).
 - **GatedDeltaNet (qwen3_5 / qwen3_5_moe)**: the tilelang ROCm backend has a HIP wrapper/codegen defect; set `FLA_TILELANG=0` to use the Triton fallback (validated to train and align correctly).
 - **DCP → HF weight consolidation**: the version guard in `veomni/checkpoint/dcp_consolidation.py` only allows torch `2.9`/`2.11` and rejects the image's torch `2.12`. Relax the guard or use a 2.9/2.11 ROCm torch build; otherwise disable `save_hf_weights`.

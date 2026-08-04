@@ -44,6 +44,7 @@ _VEOMNI_FLASH_ATTN_IMPL_MAPPING = {
     "veomni_flash_attention_2_with_sp": "flash_attention_2",
     "veomni_flash_attention_3_with_sp": "flash_attention_3",
     "veomni_flash_attention_4_with_sp": "flash_attention_4",
+    "veomni_flash_attention_aiter_with_sp": "aiter",
 }
 
 
@@ -82,6 +83,17 @@ def _load_veomni_local_flash_kernel(implementation: str) -> SimpleNamespace:
                 "VeOmni attention implementation `veomni_flash_attention_4_with_sp` requires "
                 "`flash_attn.cute` (FA4) to be importable."
             ) from e
+    elif implementation == "veomni_flash_attention_aiter_with_sp":
+        try:
+            import aiter  # noqa: F401
+        except ImportError as e:
+            raise ImportError(
+                "VeOmni attention implementation `veomni_flash_attention_aiter_with_sp` requires "
+                "`aiter` (AMD AI Tensor Engine for ROCm) to be importable."
+            ) from e
+        from .aiter import build_aiter_flash_kernels
+
+        return build_aiter_flash_kernels()
     else:
         raise ValueError(f"Unknown VeOmni flash attention implementation: {implementation}")
 
@@ -270,6 +282,8 @@ def flash_attention_forward(
         fa_kernel_implementation = "flash_attention_3"
     elif module.config._attn_implementation == "veomni_flash_attention_4_with_sp":
         fa_kernel_implementation = "veomni_flash_attention_4_with_sp"  # intercepted by VeOmni hub-kernel patch
+    elif module.config._attn_implementation == "veomni_flash_attention_aiter_with_sp":
+        fa_kernel_implementation = "veomni_flash_attention_aiter_with_sp"  # intercepted by VeOmni hub-kernel patch
     else:
         raise ValueError(
             f"unknown attn_implementation for veomni flash_attention with SP support: {module.config._attn_implementation}"
