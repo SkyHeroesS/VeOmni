@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""DeepSeek V4 model-specific SM90+ GPU kernels adapted from radixark/miles.
+"""DeepSeek V4 model-specific GPU kernels adapted from radixark/miles.
 
-Imports stay inside the public wrappers because TileLang is an optional,
-GPU-only dependency. Importing VeOmni on CPU or NPU must not load it.
+Imports stay inside the public wrappers because TileLang (NVIDIA SM90+) and
+Primus (AMD) are optional, GPU-only dependencies. Importing VeOmni on CPU or NPU
+must not load either.
 """
 
 from typing import TYPE_CHECKING
@@ -46,6 +47,21 @@ def sparse_attn_tilelang(
     from .tilelang_sparse_mla import sparse_attn_tilelang as impl
 
     return impl(q, kv, attn_sink, topk_idxs, sm_scale, return_lse)
+
+
+def sparse_attn_primus_triton_v2(
+    q: torch.Tensor,
+    kv: torch.Tensor,
+    attn_sink: torch.Tensor,
+    topk_idxs: torch.Tensor,
+    sm_scale: float,
+) -> torch.Tensor:
+    # No arch gate here: the Triton-v2 kernels lower through ``tl.dot`` to MFMA
+    # and run on any MFMA-capable arch, so the only hard requirement is that
+    # Primus is importable, which the wrapper reports.
+    from .primus_triton_v2 import sparse_attn_primus_triton_v2 as impl
+
+    return impl(q, kv, attn_sink, topk_idxs, sm_scale)
 
 
 def sparse_mqa_target_fwd(
@@ -134,6 +150,7 @@ __all__ = [
     "fp4_act_quant",
     "fp8_weight_quant",
     "linear_bf16_fp32",
+    "sparse_attn_primus_triton_v2",
     "sparse_attn_tilelang",
     "sparse_mqa_target_fwd",
     "v4_lighting_indexer",

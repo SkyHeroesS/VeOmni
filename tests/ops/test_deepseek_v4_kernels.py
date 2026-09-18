@@ -38,6 +38,74 @@ def test_kernel_package_does_not_import_tilelang_eagerly():
     assert ("tilelang" in sys.modules) is before
 
 
+def test_kernel_package_does_not_import_primus_eagerly():
+    sys.modules.pop("veomni.ops.kernels.deepseek_v4", None)
+    before = "primus" in sys.modules
+
+    importlib.import_module("veomni.ops.kernels.deepseek_v4")
+
+    assert ("primus" in sys.modules) is before
+
+
+def test_primus_triton_v2_reports_a_missing_primus_source_tree(monkeypatch):
+    """The import error names the config value, not just the missing module.
+
+    Primus is an external source tree rather than a wheel, so "no module named
+    primus" on its own leaves a user guessing which setting pulled it in.
+    """
+    from veomni.ops.kernels.deepseek_v4 import primus_triton_v2
+
+    monkeypatch.setitem(sys.modules, "primus", None)
+
+    with pytest.raises(ImportError, match="primus_triton_v2"):
+        primus_triton_v2._load_kernels()
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"q_dtype": torch.float32}, "bfloat16"),
+        ({"sink_dtype": torch.bfloat16}, "float32"),
+        ({"sink_heads": 3}, "one value per query head"),
+        ({"kv_head_dim": 8}, "matching head dims"),
+    ],
+)
+def test_primus_triton_v2_rejects_operands_it_cannot_serve(kwargs, match):
+    """Rejections happen before the kernel import, so they hold off-ROCm too."""
+    from veomni.ops.kernels.deepseek_v4 import sparse_attn_primus_triton_v2
+
+    heads, head_dim = 4, 16
+    q = torch.empty(1, 2, heads, head_dim, dtype=kwargs.get("q_dtype", torch.bfloat16))
+    kv = torch.empty(1, 2, kwargs.get("kv_head_dim", head_dim), dtype=torch.bfloat16)
+    sink = torch.empty(kwargs.get("sink_heads", heads), dtype=kwargs.get("sink_dtype", torch.float32))
+    topk = torch.zeros(1, 2, 4, dtype=torch.int32)
+
+    with pytest.raises(ValueError, match=match):
+        sparse_attn_primus_triton_v2(q, kv, sink, topk, head_dim**-0.5)
+
+
+def test_primus_triton_v2_rebases_indices_onto_one_flat_pool():
+    """Per-sample indices become pool-global rows; ``-1`` stays ``-1``.
+
+    Primus' kernel indexes a single ``[num_kv, 1, d]`` latent pool, so sample
+    ``b``'s row ``i`` has to become ``b * kv_len + i``. Getting this wrong would
+    silently read another sample's keys rather than fail.
+    """
+    from veomni.ops.kernels.deepseek_v4.primus_triton_v2 import TOPK_ALIGN, _to_pool_indices
+
+    kv_len = 10
+    topk = torch.tensor([[[0, 3, -1]], [[0, 3, -1]]], dtype=torch.int32)
+
+    pooled = _to_pool_indices(topk, kv_len)
+
+    assert pooled.shape == (2, TOPK_ALIGN)
+    assert pooled.dtype == torch.int32
+    torch.testing.assert_close(pooled[0, :3], torch.tensor([0, 3, -1], dtype=torch.int32))
+    torch.testing.assert_close(pooled[1, :3], torch.tensor([10, 13, -1], dtype=torch.int32))
+    # Slots added only to reach the alignment must not address a real row.
+    assert (pooled[:, 3:] == -1).all()
+
+
 def test_linear_bf16_fp32_matches_bf16_rounded_fp32_reference():
     x = torch.randn(2, 3, 8, dtype=torch.float32, requires_grad=True)
     weight = torch.randn(5, 8, dtype=torch.float32, requires_grad=True)
