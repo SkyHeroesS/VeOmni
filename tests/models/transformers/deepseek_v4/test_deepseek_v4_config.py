@@ -97,8 +97,11 @@ def test_the_two_fields_are_refused_when_they_arrive_with_the_wrong_type(field, 
 
 
 @pytest.mark.parametrize("coef", [0.5, 1.0, 100.0])
-def test_indexer_loss_coef_accepts_finite_positive_weights(coef):
-    with _kernels_config_installed(dsa_indexer_implementation="tilelang", dsa_attention_implementation="tilelang"):
+@pytest.mark.parametrize("implementation", ["tilelang", "triton"])
+def test_indexer_loss_coef_accepts_finite_positive_weights(coef, implementation):
+    with _kernels_config_installed(
+        dsa_indexer_implementation=implementation, dsa_attention_implementation=implementation
+    ):
         _config_asking_for_the_loss(coef=coef).validate_build_prerequisites()
 
 
